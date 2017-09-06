@@ -1,0 +1,143 @@
+---
+title: "MachineLearningAssignment"
+author: "Markus Münzel"
+date: "September 6, 2017"
+output: html_document
+---
+# Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+
+# Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message  = FALSE)
+```
+
+Load the required packages and set a seed.
+```{r loadLibs}
+library(caret)
+library(doParallel)
+library(knitr)
+
+set.seed(1234)
+```
+
+Load the training and test data set. Parse NAs while loading data from storage.
+```{r loadData}
+df.train <- read.csv(file = "~/Downloads/pml-training.csv",
+                     na.strings = c("#DIV/0!","NA"))
+df.test <- read.csv(file = "~/Downloads/pml-testing.csv",
+                     na.strings = c("#DIV/0!","NA"))
+```
+
+# Data Preparation
+The data set contains **`r dim(df.train)[2]`** variables. According to the description of the data set, some variables are no predictors such as *user name* or *timestamp*. Remove those **7** variables.
+
+```{r removeColumnsNotAPredictor}
+df.train <- subset(df.train, select = -c(X,
+                                         user_name,
+                                         raw_timestamp_part_1,
+                                         raw_timestamp_part_2,
+                                         cvtd_timestamp,
+                                         new_window,
+                                         num_window))
+```
+
+It turned out, many of the variables have a high fraction of NAs. Remove all variables with more than 0.2 share of NAs as those add only little predictive support.
+
+```{r removeNAVar}
+df.train <- df.train[,sapply(X = df.train,
+                             FUN = function(x) {sum(is.na(x))/length(x) <= 0.2})]
+```
+
+In general, variables with little variance would be removed, as they also add only little predictive support. However, after the previous steps, no variable with little variance remains.
+
+```{r removeNearZeroVarianceVars}
+df.train <- df.train[,!nearZeroVar(df.train,
+                                   saveMetrics = TRUE)$nzv]
+```
+
+# Correlation Analysis
+Now, still **`r dim(df.train)[2]`** variables remain and we would like to check, whether there are correlations between some variables as an indicator to use e.g. PCA as preprocessing method. The correlation cutoff is chosen conservatively to be 0.7.
+
+```{r checkCorr}
+corr <- findCorrelation(x = cor(subset(df.train,
+                                       select = -c(classe))),
+                        cutoff = 0.7)
+names(df.train)[corr]
+```
+
+It turns out, **`r length(corr)`** variables are highly correlated. Thus, PCA will be chosen in preprocessing the training data.
+
+# Model Fitting
+
+Now, let's fit three models: a Random Forest, GBM and rpart model.
+
+```{r modelfit}
+# register a parallel backend to fasten up model fitting.
+registerDoParallel(cores = 3)
+
+# cross validation shall be used in all model fits. Thereby, three folds shall be created and PCA shall be used to prepocesses the training folds.
+ctr <- trainControl(method = "cv",
+                    number = 3,
+                    preProcOptions = "pca",
+                    allowParallel = TRUE)
+# fit random forest
+modRf <- train(classe ~ .,
+               data = df.train,
+               method = "rf",
+               trControl = ctr)
+
+# fit GBM
+modGbm <- train(classe ~ .,
+                data = df.train,
+                method = "gbm",
+                trControl = ctr)
+
+# fit rpart 
+modRpart <- train(classe ~ .,
+                  data = df.train,
+                  method = "rpart",
+                  trControl = ctr)
+```
+
+# Model Selection
+
+Let's have a look at the accuracy of our model fits.
+
+```{r comparison}
+df.comparison <- data.frame(Model = c("Random Forest",
+                                      "GBM",
+                                      "rpart"),
+                            Accuracy = c(max(modRf$results$Accuracy),
+                                         max(modGbm$results$Accuracy),
+                                         max(modRpart$results$Accuracy)),
+                            Kappa = c(max(modRf$results$Kappa),
+                                      max(modGbm$results$Kappa),
+                                      max(modRpart$results$Kappa)))
+
+kable(df.comparison,
+      caption = "Accuracy Comparison Model Fits")
+```
+
+It turns out, the random forest model highly out performes the other models on this data set. The random forest model is chosen as the final model.
+
+# Prediction
+
+Finally, we predict the **classe** variable in the test data set.
+```{r predict}
+predict(modRf, df.test)
+```
